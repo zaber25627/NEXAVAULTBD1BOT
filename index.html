@@ -3328,26 +3328,42 @@ function renderChannelList() {
     return '<a class="channel-item" href="https://t.me/' + esc(un) + '" target="_blank" data-act="chClick" data-i="' + i + '"><div class="channel-num">' + (i + 1) + '</div><div><div class="channel-name">' + esc(ch.name || '@' + un) + '</div><div class="channel-promo">⭐ ' + t('cj_join') + '</div></div><i class="fas fa-arrow-right" style="opacity:.4;font-size:.75rem;margin-left:auto"></i></a>';
   }).join('');
 }
-ACT.chClick = d => { channelClicks[d.i] = true; };
+ACT.chClick = (d, el) => {
+  /* the global click handler calls preventDefault() on every [data-act] element, which used to block the <a href>; open the channel explicitly */
+  const ch = (S.cfg.requiredChannels || []).filter(c => c && c.username)[num(d.i)]; if (!ch) return;
+  channelClicks[d.i] = Date.now();
+  const un = String(ch.username).replace(/^@/, '').trim(), url = /^https?:\/\//i.test(String(ch.username)) ? String(ch.username) : 'https://t.me/' + un;
+  if (tg && tg.openTelegramLink) { try { tg.openTelegramLink(url); return; } catch (e) {} }
+  window.open(url, '_blank');
+};
 ACT.verifyChannels = async () => {
   const channels = (S.cfg.requiredChannels || []).filter(c => c && c.username), token = S.cfg.botVerifyToken || '', btn = $('verifyBtn');
   if (!channels.length) { showApp(); return; }
+  if (btn.disabled) return;
   btn.disabled = true; btn.innerHTML = '<i class="fas fa-circle-notch fa-spin"></i> ' + t('verifying');
-  let all = true;
+  let all = true, reason = '';
+  const items = document.querySelectorAll('.channel-item');
   for (let i = 0; i < channels.length; i++) {
-    const un = channels[i].username.startsWith('@') ? channels[i].username : '@' + channels[i].username, item = document.querySelectorAll('.channel-item')[i];
+    const raw = String(channels[i].username).trim(), un = '@' + raw.replace(/^https?:\/\/t\.me\//i, '').replace(/^@/, ''), item = items[i];
+    let isIn = false;
     try {
       if (token) {
-        const res = await fetch('https://api.telegram.org/bot' + token + '/getChatMember?chat_id=' + encodeURIComponent(un) + '&user_id=' + uid), data = await res.json();
-        const stt = data.ok && data.result && data.result.status, isIn = ['member', 'administrator', 'creator'].includes(stt);
-        if (item) { item.classList.toggle('joined', isIn); item.querySelector('.channel-num').innerHTML = isIn ? '<i class="fas fa-check" style="color:var(--pos);font-size:.7rem"></i>' : (i + 1); }
-        if (!isIn) all = false;
-      } else { const c = channelClicks[i] || false; if (item) item.classList.toggle('joined', c); if (!c) all = false; }
-    } catch (e) { if (item) item.classList.add('joined'); }
+        /* real check — a missing/failed answer is NEVER treated as "joined" */
+        const res = await fetch('https://api.telegram.org/bot' + token + '/getChatMember?chat_id=' + encodeURIComponent(un) + '&user_id=' + encodeURIComponent(uid)), data = await res.json();
+        if (data && data.ok && data.result) { const r = data.result; isIn = ['member', 'administrator', 'creator'].includes(r.status) || (r.status === 'restricted' && r.is_member === true); }
+        else reason = (data && data.description) || 'Telegram API error';
+      } else {
+        /* no bot token saved → Telegram cannot be asked; require that the channel link was really opened first */
+        isIn = !!channelClicks[i] && Date.now() - channelClicks[i] > 2500;
+        if (!channelClicks[i]) reason = L2('Open the channel first', 'আগে চ্যানেলে যান');
+      }
+    } catch (e) { reason = (e && e.message) || 'Network error'; isIn = false; }
+    if (item) { item.classList.toggle('joined', isIn); item.querySelector('.channel-num').innerHTML = isIn ? '<i class="fas fa-check" style="color:var(--pos);font-size:.7rem"></i>' : (i + 1); }
+    if (!isIn) all = false;
   }
   btn.disabled = false; btn.innerHTML = '<i class="fas fa-shield-halved"></i> ' + t('cj_verify');
   if (all) { await db.ref('users/' + uid + '/channelVerified').set(true); $('channelJoinOverlay').classList.remove('show'); showApp(); toast('✅ ' + t('cj_ok')); }
-  else toast('⚠️ ' + t('cj_fail'));
+  else toast('⚠️ ' + t('cj_fail') + (reason ? ' (' + String(reason).slice(0, 60) + ')' : ''));
 };
 function showApp() {
   $('app').style.display = 'block'; S.booted = true; renderEverything();
